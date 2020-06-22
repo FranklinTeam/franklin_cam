@@ -34,6 +34,19 @@ const char* keys  =
     ;
 }
 
+cv::Mat rtvecToRtmat(cv::Mat rmat, cv::Vec3d tvec){
+	cv::Mat tmat(3,1,CV_64FC1,tvec);
+	cv::Mat trmat;
+	double fllist[4] = {0.0, 0.0, 0.0, 1.0};
+	cv::Mat flmat(1, 4, CV_64FC1, fllist);
+	tmat.at<double>(0,0) = tvec[0];
+	tmat.at<double>(1,0) = tvec[1];
+	tmat.at<double>(2,0) = tvec[2];
+	cv::hconcat(rmat, tmat, trmat);
+	cv::vconcat(trmat, flmat, trmat);
+	return trmat;
+}
+
 ros::Publisher markers_pub;
 cv::Mat image
 
@@ -58,7 +71,7 @@ int main(int argc, char** argv) {
 
 	ros::NodeHandle n;
 	image_transport::ImageTransport it(n);
-	image_transport::Subscriber sub = it.subscribe("images", 1, imageCallback);
+	image_transport::Subscriber sub = it.subscribe("~/camera/link/camera/image", 1, imageCallback);
 
 //////////////////////////////////
 
@@ -151,60 +164,70 @@ int main(int argc, char** argv) {
         	std::vector<std::vector<cv::Point2f> > corners;
         	cv::aruco::detectMarkers(image, dictionary, corners, ids);
 
+
         	// if at least one marker detected
-        	if (ids.size() > 0)
-        	{
+       	 	if (ids.size() > 0){
            		cv::aruco::drawDetectedMarkers(image, corners, ids);
-            	std::vector<cv::Vec3d> rvecs, tvecs, rvecs_ref, tvecs_ref;
+				cv::Mat rmat;
+            	std::vector<cv::Vec3d> rvecs, tvecs;
+				std::vector<cv::Mat> rmats, rtmats;
 				std::vector<int> ids_ref_detected;
             	cv::aruco::estimatePoseSingleMarkers(corners, marker_length_m,camera_matrix, dist_coeffs, rvecs, tvecs);
 
 				bool ref_detected = false;
 
 	    		for(int i=0; i < ids.size(); i++){
-					
 					cv::aruco::drawAxis(image, camera_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.1);
-
+					cv::Rodrigues(rvecs[i], rmat);
+					rmats.push_back(rmat);
+					rtmats.push_back(rtvecToRtmat(rmat,tvecs[i]));
 	    			if(std::find(ids_ref.begin(), ids_ref.end(), ids[i]) != ids_ref.end()){
-
-						tvecs_ref.push_back(tvecs[i]);
-						ids_ref_detected.push_back(ids[i]);
-
+						ids_ref_detected.push_back(i);
 						ref_detected = true;
 					}
 	    		}
             
-               	if(ref_detected){
-					std::vector<double> ref = {0.,0.,0.};
-				
-					for(int i=0; i < ids_ref_detected.size(); i++){
-						std::vector<int>::iterator it = std::find(ids_ref.begin(), ids_ref.end(), ids_ref_detected[i]);
-						ref[0] += tvecs_ref[i](0) - tvec_inter_ref[it[0]](0);
-						ref[1] += tvecs_ref[i](1) - tvec_inter_ref[it[0]](1);
-						ref[2] += tvecs_ref[i](2) - tvec_inter_ref[it[0]](2);
-					}
-					ref[0]/ids_ref_detected.size();
-					ref[1]/ids_ref_detected.size();
-					ref[2]/ids_ref_detected.size();
-				
+            	if(ref_detected){				
 					int tab = 10;
             		for(int i=0; i < ids.size(); i++){
 						if(std::find(ids_ref.begin(), ids_ref.end(), ids[i]) == ids_ref.end()){
 
-							//Display of coordinates of each markers
-							cv::putText(image, std::to_string(ids[i]), cv::Point(tab, 30), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);				
+							//Position of the robot in the coordinate system of the mobile marker
+							cv::Mat pose_mob (4,1,CV_64FC1);
+							std::vector<double> pose_robot = {0.0,0.0,0.0};
+							pose_mob.at<double>(0,0) = pose_robot[0];
+							pose_mob.at<double>(1,0) = pose_robot[1];
+							pose_mob.at<double>(2,0) = pose_robot[2];
+							pose_mob.at<double>(3,0) = 1.0;
+	
+							//Calcul the position of the robot in the coordinate system of the marker of reference
+							cv::Mat pose_ref = rtmats[ids_ref_detected[0]].inv() * rtmats[i] * pose_mob;
+							double tx = pose_ref.at<double>(0,0);
+							double ty = pose_ref.at<double>(1,0);
+							double tz = pose_ref.at<double>(2,0);
 
-							vector_to_marker.str(std::string());
-		        			vector_to_marker << std::setprecision(4) << "X: " << std::setw(8) << tvecs[i](1) - ref[1]; 
-							cv::putText(image, vector_to_marker.str(), cv::Point(tab, 60), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 0, 255), 1, CV_8S);
+							//Rotation of the robot in the coordinate system of the mobile marker
+							cv::Mat rot_mob (3,1,CV_64FC1);
+							std::vector<double> rot_robot = {0.0,0.0,0.0};
+							rot_mob.at<double>(0,0) = rot_robot[0];
+							rot_mob.at<double>(1,0) = rot_robot[1];
+							rot_mob.at<double>(2,0) = rot_robot[2];
 
-               				vector_to_marker.str(std::string());
-                			vector_to_marker << std::setprecision(4) << "Y: " << std::setw(8) << tvecs[i](0) - ref[0];
-                			cv::putText(image, vector_to_marker.str(), cv::Point(tab, 90), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 255, 0), 1, CV_8S);
+							//Calcul the rotation of the robot in the coordinate system of the marker of reference
+							cv::Mat rot_ref = rmats[ids_ref_detected[0]].inv() * rmats[i] * rot_mob;
+							double rx = pose_ref.at<double>(0,0);
+							double ry = pose_ref.at<double>(1,0);
+							double rz = pose_ref.at<double>(2,0);
 
-                			vector_to_marker.str(std::string());
-                			vector_to_marker << std::setprecision(4) << "Z: " << std::setw(8) << tvecs[i](2) - ref[2];
-                			cv::putText(image, vector_to_marker.str(), cv::Point(tab, 120), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 0, 0), 1, CV_8S);
+							//Display translation and rotation on screen
+							cv::putText(image, "Translation ID "+std::to_string(ids[i]), cv::Point(tab, 30), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);
+							cv::putText(image, "X = " + std::to_string(tx), cv::Point(tab, 60), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 0, 255), 1, CV_8S);
+                			cv::putText(image, "Y = " + std::to_string(ty), cv::Point(tab, 90), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 255, 0), 1, CV_8S);
+                			cv::putText(image, "Z = " + std::to_string(tz), cv::Point(tab, 120), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 0, 0), 1, CV_8S);
+							cv::putText(image, "Rotation", cv::Point(tab, 150), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);
+							cv::putText(image, "X = " + std::to_string(rx), cv::Point(tab, 180), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 0, 255), 1, CV_8S);
+                			cv::putText(image, "Y = " + std::to_string(ry), cv::Point(tab, 210), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 255, 0), 1, CV_8S);
+                			cv::putText(image, "Z = " + std::to_string(rz), cv::Point(tab, 240), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 0, 0), 1, CV_8S);
 
 							tab += 300;
 
