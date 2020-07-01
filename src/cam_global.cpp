@@ -2,6 +2,7 @@
 #include <std_msgs/String.h>
 #include <ros/ros.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <franklin/Camera.h>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
@@ -11,11 +12,16 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <sstream>
 #include <boost/algorithm/string.hpp>
-
 #include <image_transport/image_transport.h>
+#include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <sensor_msgs/image_encodings.h>
+
+namespace enc = sensor_msgs::image_encodings;
 
 cv::Mat rtvecToRtmat(cv::Vec3d rvec, cv::Vec3d tvec){
 	cv::Mat tmat(3,1,CV_64FC1,tvec);
@@ -32,7 +38,7 @@ cv::Mat rtvecToRtmat(cv::Vec3d rvec, cv::Vec3d tvec){
 }
 
 ros::Publisher markers_pub;
-cv::Mat image
+cv::Mat image;
 
 void imageCallback(const sensor_msgs::ImageConstPtr& msg)
 {
@@ -47,13 +53,11 @@ void imageCallback(const sensor_msgs::ImageConstPtr& msg)
 
 int main(int argc, char **argv){
 
-	ros::init(argc, argv, "frkl_cam");
-
-	markers_pub = n.advertise<std::vector<double>>("markers_pos", 1);
-
-	ros::NodeHandle n;
+	ros::init(argc, argv, "cam_global");
+	ros::NodeHandle n("~");
+	markers_pub = n.advertise<franklin::Camera>("markers_pos_global", 1);
 	image_transport::ImageTransport it(n);
-	image_transport::Subscriber sub = it.subscribe("~/camera/link/camera/image", 1, imageCallback);
+	image_transport::Subscriber sub = it.subscribe("/camera/image_raw", 1, imageCallback);
 	
 	/*Dictionary of Aruco markers*/
 	int dictionaryId = 11;
@@ -62,27 +66,51 @@ int main(int argc, char **argv){
 	/*Marker length*/
 	float marker_length_m = 0.05;
 
+	/*Camera distortion*/
+	int numberOfPixelInHeight,numberOfPixelInWidth;
+ 	double heightOfSensor, widthOfSensor;
+   	double focalLength=0.5;
+   	double mx, my, U0, V0;
+   	numberOfPixelInHeight=600;
+    numberOfPixelInWidth=600;
+ 
+    heightOfSensor=10;
+    widthOfSensor=10;
+ 
+   	my=(numberOfPixelInHeight)/heightOfSensor ;
+    U0=(numberOfPixelInHeight)/2 ;
+ 
+    mx=(numberOfPixelInWidth)/widthOfSensor;
+    V0=(numberOfPixelInWidth)/2;
+
+	cv::Mat camera_matrix = (cv::Mat_<double>(3,3)<<focalLength*mx, 0, V0,0,focalLength*my,U0,0,0,1);
+	cv::Mat dist_coeffs = (cv::Mat_<double>(5,1) <<0, 0, 0, 0, 0);
+
 	/*Ids of markers of reference*/
-	std::vector<int> ids_ref = {0,1,2,3};
+	std::vector<std::string> ids_ref;
+	ids_ref.push_back("0");
+	ids_ref.push_back("1");
+	ids_ref.push_back("2");
+	ids_ref.push_back("3");
 
-	/*Position of the origin to the different marker of reference*/
-	std::vector<cv::Vec3d> pos_ref_origin = {{0.0,0.0,0.0}};
+    /*Position of the origin to the different marker of reference*/
+	std::vector<cv::Vec3d> pos_ref_origin;
+	pos_ref_origin.push_back(0.0);
+	pos_ref_origin.push_back(0.0);
+	pos_ref_origin.push_back(0.0);
+	pos_ref_origin.push_back(0.0);
 
-	
-    cv::Mat image, image_resized;
-	std::ostringstream vector_to_marker;
+	////////////////////
 
 	ros::Rate loop_rate(60); //60FPS
+	cv::Mat image_resized;
 
-    while (in_video.grab()){
+    while (ros::ok()){
 		ros::spinOnce();
-		if(image != NULL){
-		
-
+		if(image.empty() == false){
         	std::vector<int> ids;
         	std::vector<std::vector<cv::Point2f> > corners;
         	cv::aruco::detectMarkers(image, dictionary, corners, ids);
-
         	// if at least one marker detected
         	if (ids.size() > 0){
            		cv::aruco::drawDetectedMarkers(image, corners, ids);
@@ -91,7 +119,6 @@ int main(int argc, char **argv){
 				std::vector<cv::Mat> rmats, rtmats;
 				std::vector<int> ids_ref_detected;
             	cv::aruco::estimatePoseSingleMarkers(corners, marker_length_m,camera_matrix, dist_coeffs, rvecs, tvecs);
-
 	    		for(int i=0; i < ids.size(); i++){
 					cv::aruco::drawAxis(image, camera_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.1);
 					rtmats.push_back(rtvecToRtmat(rvecs[i],tvecs[i]));
@@ -99,20 +126,16 @@ int main(int argc, char **argv){
 						ids_ref_detected.push_back(i);
 					}
 	    		}
-            
             	if(ids_ref_detected.size() > 0){				
 					int tab = 10;
             		for(int i=0; i < ids.size(); i++){
 						if(std::find(ids_ref.begin(), ids_ref.end(), ids[i]) == ids_ref.end()){
-
 							//Position of the robot in the coordinate system of the mobile marker
 							cv::Mat pose_mob (4,1,CV_64FC1);
-							std::vector<double> pose_robot = {0.0,0.0,0.0};
-							pose_mob.at<double>(0,0) = pose_robot[0];
-							pose_mob.at<double>(1,0) = pose_robot[1];
-							pose_mob.at<double>(2,0) = pose_robot[2];
+							pose_mob.at<double>(0,0) = 0.0;
+							pose_mob.at<double>(1,0) = 0.0;
+							pose_mob.at<double>(2,0) = 0.0;
 							pose_mob.at<double>(3,0) = 1.0;
-	
 							//Calcul the position of the robot in the coordinate system of the marker of reference
 							double tx = 0.0;
 							double ty = 0.0;
@@ -129,17 +152,36 @@ int main(int argc, char **argv){
 							ty = ty/ids_ref_detected.size();
 							tz = tz/ids_ref_detected.size();
 
+							//Conversion double to string
+
+							std::ostringstream osX;
+							std::ostringstream osY;
+							std::ostringstream osZ;
+							osX << tx;
+							osY << ty;
+							osZ << tz;
+							std::string texteX = osX.str();
+							std::string texteY = osY.str();
+							std::string texteZ = osZ.str();
+							texteX = texteX.substr(0, 7);
+							texteY = texteY.substr(0, 7);
+							texteZ = texteZ.substr(0, 7);
+
 							//Display translation and rotation on screen
-							cv::putText(image, "ID "+std::to_string(ids[i]), cv::Point(tab, 30), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);
+
+							cv::putText(image, "ID" + ids[i] , cv::Point(tab, 30), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);
 							cv::putText(image, "Translation", cv::Point(tab, 60), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 252, 124), 1, CV_8S);
-							cv::putText(image, "X = " + std::to_string(tx).substr(0, 7) + " m", cv::Point(tab, 90), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 0, 255), 1, CV_8S);
-                			cv::putText(image, "Y = " + std::to_string(ty).substr(0, 7) + " m", cv::Point(tab, 120), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 255, 0), 1, CV_8S);
-                			cv::putText(image, "Z = " + std::to_string(tz).substr(0, 7) + " m", cv::Point(tab, 150), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 0, 0), 1, CV_8S);
+							cv::putText(image, texteX + " m", cv::Point(tab, 90), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 0, 255), 1, CV_8S);
+                			cv::putText(image, texteY + " m", cv::Point(tab, 120), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(0, 255, 0), 1, CV_8S);
+                			cv::putText(image, texteZ + " m", cv::Point(tab, 150), cv::FONT_HERSHEY_SIMPLEX, 1.2, cv::Scalar(255, 0, 0), 1, CV_8S);
 
 							tab += 300;
 
 							//Sending coordinates on a topic
-							std::vector<double> marker_pos = {ids[i], tvecs[i](1) - ref[1], tvecs[i](0) - ref[0], tvecs[i](2) - ref[2]};
+							franklin::Camera marker_pos;
+							marker_pos.y=tx;
+							marker_pos.x=ty;
+							marker_pos.z=tz;
 							markers_pub.publish(marker_pos);
 						}
 					}
